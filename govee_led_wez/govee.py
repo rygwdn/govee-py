@@ -22,6 +22,8 @@ from .http import (
     http_device_control,
     http_get_devices,
     http_get_state,
+    http_get_ttr_token,
+    http_get_ttr,
 )
 from .models import ModelInfo
 
@@ -130,6 +132,7 @@ class GoveeController:
         interfaces = interfaces or ["0.0.0.0"]
         for iface in interfaces:
             if self.lan_source_address:
+                print("oh no")
                 # we're on a multi-homed system; we don't currently
                 # know enough to handle this correctly, so shrug for now.
                 # Handling this correctly would mean capturing the complete
@@ -138,6 +141,7 @@ class GoveeController:
                 # address.
                 self.lan_source_address = None
             else:
+                print("iface", iface)
                 self.lan_source_address = iface
             self.lan_pollers.append(
                 asyncio.create_task(self._lan_poller(iface, interval))
@@ -232,6 +236,23 @@ class GoveeController:
 
         return result
 
+    #   await this.platform.sendDeviceUpdate(this.accessory, {
+    #     cmd: 'rgbScene',
+    #     value: [awsCode, bleCode],
+    #   });
+    
+    async def query_scenes(self, user, password):
+        token = await http_get_ttr_token(user, password)
+        import pprint; pprint.pprint(self.devices)
+        return [
+            {
+                "device": self.devices[scene["device"]],
+                "name": scene["oneClickName"],
+                "iotCommand": scene["iotCommand"],
+            }
+            for scene in await http_get_ttr(token)
+        ]
+
     async def query_http_devices(self) -> List[GoveeHttpDeviceDefinition]:
         """Make an immediate call to the HTTP API to list available devices"""
         if self.api_key is None:
@@ -291,6 +312,7 @@ class GoveeController:
         appropriate"""
 
         if device.lan_definition:
+            # TODO: hmm
             future = asyncio.get_event_loop().create_future()
             try:
                 if device.device_id not in self.waiting_for_status:
@@ -712,6 +734,77 @@ class GoveeController:
             return device.state
         raise RuntimeError("either call start_lan_poller or set_http_api_key")
 
+    async def set_scene(
+        self, device: GoveeDevice, scene
+    ) -> GoveeDeviceState:
+        """Set a device scene"""
+        # assumed_state = deepcopy(
+        #     device.state
+        #     or GoveeDeviceState(
+        #         turned_on=True,
+        #         brightness_pct=100,
+        #         color=None,
+        #         color_temperature=None,
+        #     )
+        # )
+        #assumed_state.turned_on = True
+        #assumed_state.brightness_pct = brightness_pct
+
+        # TODO: seems like lan may accept this too :D
+        if device.lan_definition:
+            #device.state = assumed_state
+            self._send_lan_command(
+                device.lan_definition,
+                {
+                    "msg": {
+                        #"cmd": "brightness",
+                        #"data": {"value": brightness_pct},
+                        "cmd": "ptReal",
+                        "data": {
+                            "command": scene,
+                        }
+                    }
+                },
+            )
+            # We don't query the device right away: it can return
+            # stale information immediately after we send the data,
+            # and then not return any replies for a little while
+            #self._fire_device_change(device)
+            return device.state
+
+        # if device.ble_device:
+            # This is probably possible too
+
+        # if self.api_key and device.http_definition:
+        #     # if "brightness" not in device.http_definition.supported_commands:
+        #     #     raise RuntimeError("device doesn't support brightness command")
+
+        #     # TODO
+        #     # pprint
+        #     await asyncio.wait_for(
+        #         http_device_control(
+        #             self.api_key,
+        #             {
+        #                 "device": device.device_id,
+        #                 "model": device.model,
+        #                 "cmd": "ptReal",
+        #                 "data": {
+        #                     "command": scene,
+        #                 }
+        #                 # "cmd": {
+        #                 #     "name": "ptReal",
+        #                 #     "data": {"command": scene}
+        #                 #     #"value": brightness_pct,
+        #                 # },
+        #             },
+        #         ),
+        #         timeout=self.device_control_timeout,
+        #     )
+        #     device.state = assumed_state
+        #     self._fire_device_change(device)
+        #     return device.state
+        raise RuntimeError("only supported by with http devices")
+
     async def _http_poller(self, interval: int):
         while True:
             await self.query_http_devices()
@@ -780,6 +873,7 @@ class GoveeController:
                 green=rgb["g"],
                 blue=rgb["b"],
             )
+        # TODO...
         state = GoveeDeviceState(
             turned_on=data["onOff"] == 1,
             brightness_pct=data["brightness"],
@@ -815,6 +909,7 @@ class GoveeController:
         msg = msg["msg"]
         data = msg["data"]
 
+        import pprint; pprint.pprint("yo", msg, data)
         if msg["cmd"] == "scan":
             self._process_lan_scan(data)
             return
